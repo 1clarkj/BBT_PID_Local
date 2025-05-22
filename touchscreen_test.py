@@ -40,9 +40,9 @@ def run_tracking_loop():
                     x_mm = translate(x_raw, RAW_X_MIN, RAW_X_MAX, MM_X_MIN, MM_X_MAX)
                     y_mm = translate(y_raw, RAW_Y_MIN, RAW_Y_MAX, MM_Y_MAX, MM_Y_MIN)  # Y flipped
 
-                    message = json.dumps({"x": x_mm, "y": y_mm})
-                    sock.sendto(message.encode(), (LAPTOP_IP, UDP_PORT))
-                    print(f"Sent to {LAPTOP_IP}:{UDP_PORT} -> {message}")
+                    data = np.array([x_mm, y_mm], dtype=np.float32).tobytes()
+                    sock.sendto(data, (LAPTOP_IP, UDP_PORT))
+                    print(f"Sent: ({x_mm:.1f}, {y_mm:.1f})")
                     time.sleep(0.01)
 
     except KeyboardInterrupt:
