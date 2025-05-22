@@ -1,0 +1,4 @@
+pigpio>=1.78
+pygame>=2.5.2
+evdev>=1.6.1
+numpy>=1.26.4
