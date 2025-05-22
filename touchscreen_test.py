@@ -1,35 +1,25 @@
 import evdev
 from evdev import InputDevice, categorize, ecodes
 
-# Replace this with your actual device path (found using evtest)
-# determine with python3 -m evdev.evtest
-DEVICE_PATH = "/dev/input/event2"
+from evdev import InputDevice, ecodes
+import time
 
-try:
-    dev = InputDevice(DEVICE_PATH)
-    print(f"Listening for touch events on: {dev.name} ({dev.path})")
-except FileNotFoundError:
-    print(f"Device not found at {DEVICE_PATH}")
-    exit(1)
+# Open the touchscreen input device
+dev = InputDevice('/dev/input/event2')
 
-x = y = None
-touching = False
+def ball_position_raw():
+    x_pos = y_pos = None
+    for event in dev.read_loop():
+        if event.type == ecodes.EV_ABS:
+            if event.code == ecodes.ABS_X:
+                x_pos = event.value
+            elif event.code == ecodes.ABS_Y:
+                y_pos = event.value
 
-for event in dev.read_loop():
-    if event.type == ecodes.EV_ABS:
-        absevent = categorize(event)
-        if event.code == ecodes.ABS_MT_POSITION_X:
-            x = event.value
-        elif event.code == ecodes.ABS_MT_POSITION_Y:
-            y = event.value
-
-    elif event.type == ecodes.EV_KEY and event.code == ecodes.BTN_TOUCH:
-        if event.value == 1:
-            touching = True
-        elif event.value == 0:
-            touching = False
-            if x is not None and y is not None:
-                print(f"Touch released at ({x}, {y})")
-
-    if touching and x is not None and y is not None:
-        print(f"Touching at ({x}, {y})")
+        # Return a full coordinate only when both x and y are valid
+        if x_pos is not None and y_pos is not None:
+            return (x_pos, y_pos)
+while True:
+    pos = ball_position_raw()
+    print(f"Ball position: {pos}")
+    time.sleep(0.01)
