@@ -1,27 +1,52 @@
-from evdev import InputDevice, ecodes
+import socket
+import json
 import time
+from evdev import InputDevice, ecodes
 
-# Connect to the correct touchscreen input event
-dev = InputDevice('/dev/input/event2')
+# Configuration
+TOUCH_DEVICE = "/dev/input/event2"
+LAPTOP_IP = "192.168.0.123"  # Replace with your laptop IP
+UDP_PORT = 5005
 
-def ball_position_raw():
-    x = y = None
+# UDP setup
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+# Open touchscreen device
+dev = InputDevice(TOUCH_DEVICE)
+
+# Touchscreen calibration boundaries
+RAW_X_MIN, RAW_X_MAX = 157, 1976
+RAW_Y_MIN, RAW_Y_MAX = 121, 1920
+MM_X_MIN, MM_X_MAX = -172, 172
+MM_Y_MIN, MM_Y_MAX = -136, 136  # Inverted later for GUI
+
+def translate(value, raw_min, raw_max, mm_min, mm_max):
+    value = max(min(value, raw_max), raw_min)
+    scale = (mm_max - mm_min) / (raw_max - raw_min)
+    return mm_min + (value - raw_min) * scale
+
+def run_tracking_loop():
+    x_raw = y_raw = None
 
     try:
         for event in dev.read_loop():
             if event.type == ecodes.EV_ABS:
                 if event.code == ecodes.ABS_X:
-                    x = event.value
+                    x_raw = event.value
                 elif event.code == ecodes.ABS_Y:
-                    y = event.value
+                    y_raw = event.value
 
-                if x is not None and y is not None:
-                    print(f"Ball position: ({x}, {y})")
-                    # Optional: sleep a bit to reduce CPU usage
+                if x_raw is not None and y_raw is not None:
+                    x_mm = translate(x_raw, RAW_X_MIN, RAW_X_MAX, MM_X_MIN, MM_X_MAX)
+                    y_mm = translate(y_raw, RAW_Y_MIN, RAW_Y_MAX, MM_Y_MAX, MM_Y_MIN)  # Y flipped
+
+                    message = json.dumps({"x": x_mm, "y": y_mm})
+                    sock.sendto(message.encode(), (LAPTOP_IP, UDP_PORT))
+                    print(f"Sent to {LAPTOP_IP}:{UDP_PORT} -> {message}")
                     time.sleep(0.01)
 
     except KeyboardInterrupt:
-        print("\nExited cleanly via Ctrl+C.")
+        print("\nStopped by user.")
 
 if __name__ == "__main__":
-    ball_position_raw()
+    run_tracking_loop()
