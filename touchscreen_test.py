@@ -5,8 +5,8 @@ from evdev import InputDevice, ecodes
 
 # Configuration
 TOUCH_DEVICE = "/dev/input/event2"
-LAPTOP_IP = "192.168.0.123"  # Replace with your laptop IP
-UDP_PORT = 5005
+LAPTOP_IP = "192.168.0.115"  # Replace with your laptop IP
+UDP_PORT = 6006
 
 # UDP setup
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
