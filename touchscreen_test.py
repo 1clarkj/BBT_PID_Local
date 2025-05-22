@@ -1,5 +1,5 @@
 import socket
-import json
+import numpy as np
 import time
 from evdev import InputDevice, ecodes
 
