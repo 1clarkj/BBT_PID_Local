@@ -17,8 +17,8 @@ K_P = (0.25, 0.25)
 K_I = (0.01, 0.01)  # Introduce small integral gain for now
 K_D = (25, 25)
 
-e_filter = 15
-d_filter = 75
+e_filter = 5
+d_filter = 10
 
 desired_position = [122.5, 100.5]  # use list, so it can be updated in thread
 
@@ -77,7 +77,7 @@ def listen_for_hand_pose():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("192.168.0.139", 5006))
 
-    step_mm = 3.0
+    step_mm = 5.0
 
     while True:
         try:
