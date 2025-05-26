@@ -105,9 +105,9 @@ def listen_for_hand_pose():
                 new_y = desired_position[1]
 
                 if x_class == 1:
-                    new_x -= step_mm
-                elif x_class == 2:
                     new_x += step_mm
+                elif x_class == 2:
+                    new_x -= step_mm
 
                 if y_class == 1:
                     new_y += step_mm  # flipped because Y increases upward in center-origin
