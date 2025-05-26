@@ -77,7 +77,7 @@ def listen_for_hand_pose():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("192.168.0.139", 5006))
 
-    step_mm = 5.0
+    step_mm = 7.0
 
     while True:
         try:
