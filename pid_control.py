@@ -5,6 +5,7 @@ import socket
 import threading
 import joblib
 import warnings
+import sys
 warnings.filterwarnings("ignore", message="X does not have valid feature names.*")
 
 
@@ -202,3 +203,4 @@ except KeyboardInterrupt:
     print("\nKeyboard interrupt received. Shutting down gracefully...")
     controller._servo_controller.set_degrees_bbt((0, 0))  # Optional: reset platform
     ball_pos_sender.close()
+    sys.exit(0)
