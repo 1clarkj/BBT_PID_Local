@@ -18,7 +18,7 @@ K_D = (25, 25)
 e_filter = 15
 d_filter = 75
 
-desired_position = [0.0, 0.0]  # use list, so it can be updated in thread
+desired_position = [157.5, 122.5]  # use list, so it can be updated in thread
 
 current_servo_positions = (0, 0)  # Servo position (degrees)
 b_pos = (0, 0)  # Ball position in mm
