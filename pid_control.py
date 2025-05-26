@@ -4,6 +4,8 @@ import numpy as np
 import socket
 import threading
 import joblib
+import warnings
+warnings.filterwarnings("ignore", message="X does not have valid feature names.*")
 
 
 from ball_balance_table_controller_v2 import BallBalanceTableControllerv2
@@ -205,5 +207,6 @@ while True:
     # PID -60-60
     current_servo_positions = (-(pid[0] - 5), -(pid[1] - 5))
     controller._servo_controller.set_degrees_bbt(current_servo_positions)
+    print(f"Ball Position: {b_pos}, Desired Position: {desired_position}")  
     
     time.sleep(0.004)  # Small delay for control loop timing
