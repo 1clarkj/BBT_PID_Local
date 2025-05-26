@@ -201,5 +201,4 @@ try:
 except KeyboardInterrupt:
     print("\nKeyboard interrupt received. Shutting down gracefully...")
     controller._servo_controller.set_degrees_bbt((0, 0))  # Optional: reset platform
-    controller.stop()  # Optional: clean shutdown of hardware
     ball_pos_sender.close()
