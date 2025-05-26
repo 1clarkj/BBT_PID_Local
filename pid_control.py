@@ -146,67 +146,60 @@ def hits_wall_mm(x_mm, y_mm):
 
 threading.Thread(target=listen_for_hand_pose, daemon=True).start()
 
-while True:
-    current_time = datetime.datetime.now()
-    time_delta = current_time - last_time
-    dt = time_delta.total_seconds()  # Ensure dt is in seconds for better timing accuracy
-    last_time = current_time
+try:
+    while True:
+        current_time = datetime.datetime.now()
+        time_delta = current_time - last_time
+        dt = time_delta.total_seconds()
+        last_time = current_time
 
-    b_pos = controller.get_ball_position_in_mm()
-    pos_bytes = np.array(b_pos, dtype=np.float32).tobytes()
-    ball_pos_sender.sendto(pos_bytes, (gui_ip, gui_port))
+        b_pos = controller.get_ball_position_in_mm()
+        pos_bytes = np.array(b_pos, dtype=np.float32).tobytes()
+        ball_pos_sender.sendto(pos_bytes, (gui_ip, gui_port))
 
-    last_error = current_error
+        last_error = current_error
 
-    with position_lock:
-        target = tuple(desired_position)  # copy safely
+        with position_lock:
+            target = tuple(desired_position)
 
-    current_error = (target[0] - b_pos[0], target[1] - b_pos[1])
+        current_error = (target[0] - b_pos[0], target[1] - b_pos[1])
 
-    # Proportional term (P)
-    p_error = current_error
-    e_terms[e_counter] = p_error
+        # P
+        p_error = current_error
+        e_terms[e_counter] = p_error
+        sum_e = (0, 0)
+        for j in range(e_filter):
+            sum_e = (sum_e[0] + e_terms[j][0], sum_e[1] + e_terms[j][1])
+        p_error = (sum_e[0] / e_filter, sum_e[1] / e_filter)
+        e_counter = (e_counter + 1) % e_filter
 
-    sum_e = (0, 0)
+        # I
+        sum_error = (sum_error[0] + current_error[0] * dt,
+                     sum_error[1] + current_error[1] * dt)
 
-    for j in range(e_filter):
-        sum_e = (sum_e[0] + e_terms[j][0], sum_e[1] + e_terms[j][1])
+        # D
+        delta_error = (current_error[0] - last_error[0], current_error[1] - last_error[1])
+        d_terms[d_counter] = delta_error
+        sum_d = (0, 0)
+        for j in range(d_filter):
+            sum_d = (sum_d[0] + d_terms[j][0], sum_d[1] + d_terms[j][1])
+        delta_error = (sum_d[0] / d_filter, sum_d[1] / d_filter)
+        d_counter = (d_counter + 1) % d_filter
 
-    p_error = (sum_e[0] / e_filter, sum_e[1] / e_filter)
-    e_counter += 1
+        # PID
+        p = (p_error[0] * K_P[0], p_error[1] * K_P[1])
+        i = (sum_error[0] * K_I[0], sum_error[1] * K_I[1])
+        d = (delta_error[0] * K_D[0], delta_error[1] * K_D[1])
+        pid = (p[0] + i[0] + d[0], p[1] + i[1] + d[1])
 
-    if e_counter >= e_filter:
-        e_counter = 0
+        current_servo_positions = (-(pid[0] - 5), -(pid[1] - 5))
+        controller._servo_controller.set_degrees_bbt(current_servo_positions)
 
-    # Accumulate error over time for the integral term (I)
-    sum_error = (sum_error[0] + current_error[0] * dt, sum_error[1] + current_error[1] * dt)
+        print(f"Ball Position: {b_pos}, Desired Position: {desired_position}")
+        time.sleep(0.004)
 
-    # Derivative term (D)
-    delta_error = (current_error[0] - last_error[0], current_error[1] - last_error[1])
-
-    d_terms[d_counter] = delta_error
-
-    sum_d = (0, 0)
-
-    for j in range(d_filter):
-        sum_d = (sum_d[0] + d_terms[j][0], sum_d[1] + d_terms[j][1])
-
-    delta_error = (sum_d[0] / d_filter, sum_d[1] / d_filter)
-    d_counter += 1
-
-    if d_counter >= d_filter:
-        d_counter = 0
-
-    # PID control
-    p = (p_error[0] * K_P[0], p_error[1] * K_P[1])
-    i = (sum_error[0] * K_I[0], sum_error[1] * K_I[1])  # Integral term based on accumulated error
-    d = (delta_error[0] * K_D[0], delta_error[1] * K_D[1])
-
-    pid = (p[0] + i[0] + d[0], p[1] + i[1] + d[1])
-
-    # PID -60-60
-    current_servo_positions = (-(pid[0] - 5), -(pid[1] - 5))
-    controller._servo_controller.set_degrees_bbt(current_servo_positions)
-    print(f"Ball Position: {b_pos}, Desired Position: {desired_position}")  
-    
-    time.sleep(0.004)  # Small delay for control loop timing
+except KeyboardInterrupt:
+    print("\nKeyboard interrupt received. Shutting down gracefully...")
+    controller._servo_controller.set_degrees_bbt((0, 0))  # Optional: reset platform
+    controller.stop()  # Optional: clean shutdown of hardware
+    ball_pos_sender.close()
