@@ -17,8 +17,8 @@ K_P = (0.25, 0.25)
 K_I = (0.01, 0.01)  # Introduce small integral gain for now
 K_D = (25, 25)
 
-e_filter = 5
-d_filter = 10
+e_filter = 7
+d_filter = 30
 
 desired_position = [122.5, 100.5]  # use list, so it can be updated in thread
 
