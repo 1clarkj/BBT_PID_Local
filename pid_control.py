@@ -65,7 +65,7 @@ maze_walls_mm = [
 ]
 
 ball_pos_sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-gui_ip = "192.168.X.X"  # Replace with the IP of the machine running the GUI
+gui_ip = "192.168.0.115"  # Replace with the IP of the machine running the GUI
 gui_port = 6007         # This must match the port the GUI listens on
 
 # GUI update lock
@@ -73,7 +73,7 @@ position_lock = threading.Lock()
 
 def listen_for_hand_pose():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("0.0.0.0", 5006))
+    sock.bind(("192.168.0.139", 5006))
 
     step_mm = 1.0
 
