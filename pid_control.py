@@ -3,11 +3,10 @@ import datetime
 import numpy as np
 import socket
 import threading
-import joblib
 import warnings
 import sys
 import json
-warnings.filterwarnings("ignore", message="X does not have valid feature names.*")
+warnings.filterwarnings("ignore")
 
 
 from ball_balance_table_controller_v2 import BallBalanceTableControllerv2
@@ -45,9 +44,6 @@ sum_error = (0.0, 0.0)  # To accumulate error over time for the integral term
 e_counter = 0
 d_counter = 0
 
-model = joblib.load("mlp_model1.pkl")
-scaler = joblib.load("minmax_scaler.pkl")
-
 MAX_WIDTH_MM = 355
 MAX_HEIGHT_MM = 285
 
@@ -76,10 +72,14 @@ hand_pose_bind_ip = "0.0.0.0"
 
 HANDSHAKE_PORT = 8008
 DEFAULT_GUI_POSITION_PORT = 6007
+TARGET_TIMEOUT_S = 0.5
 
 # GUI update lock
 position_lock = threading.Lock()
 endpoint_lock = threading.Lock()
+target_lock = threading.Lock()
+last_target_seq = -1
+last_target_rx_time = time.monotonic()
 
 def set_gui_endpoint(ip: str, port: int, source: str):
     global gui_ip, gui_port
@@ -123,70 +123,59 @@ def handshake_listener():
             except Exception as e:
                 print(f"Handshake ACK send error: {e}")
 
-def listen_for_hand_pose():
+def apply_desired_target(x_mm: float, y_mm: float):
+    with position_lock:
+        new_x = max(-MAX_WIDTH_MM / 2 + ball_radius_mm, min(MAX_WIDTH_MM / 2 - ball_radius_mm, x_mm))
+        new_y = max(-MAX_HEIGHT_MM / 2 + ball_radius_mm, min(MAX_HEIGHT_MM / 2 - ball_radius_mm, y_mm))
+        if not hits_wall_mm(new_x, desired_position[1]):
+            desired_position[0] = new_x
+        if not hits_wall_mm(desired_position[0], new_y):
+            desired_position[1] = new_y
+
+def listen_for_control():
+    global last_target_seq, last_target_rx_time
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((hand_pose_bind_ip, hand_pose_port))
-    print(f"Listening for hand pose on {hand_pose_bind_ip}:{hand_pose_port}")
-
-    step_mm = 7.0
+    print(f"Listening for control on {hand_pose_bind_ip}:{hand_pose_port}")
 
     while True:
         try:
             data, addr = sock.recvfrom(2048)
-
-            # Control path on same UDP port: update GUI position return endpoint.
             try:
                 msg = json.loads(data.decode("utf-8"))
             except Exception:
-                msg = None
-            if isinstance(msg, dict) and msg.get("type") == "position_subscribe":
+                continue
+
+            if not isinstance(msg, dict):
+                continue
+
+            msg_type = msg.get("type")
+            if msg_type == "position_subscribe":
                 requested_port = int(msg.get("position_port", DEFAULT_GUI_POSITION_PORT))
                 set_gui_endpoint(addr[0], requested_port, "position_subscribe")
                 continue
 
-            floats = np.frombuffer(data, dtype=np.float32)
+            if msg_type == "target_position":
+                x_mm = msg.get("x_mm")
+                y_mm = msg.get("y_mm")
+                seq = int(msg.get("seq", -1))
+                if x_mm is None or y_mm is None:
+                    continue
+                try:
+                    x_mm = float(x_mm)
+                    y_mm = float(y_mm)
+                except (TypeError, ValueError):
+                    continue
 
-            if floats.shape[0] != 40:
-                continue
-
-            left = floats[:20].reshape(1, -1)
-            right = floats[20:].reshape(1, -1)
-
-            left_scaled = scaler.transform(left)
-            right_scaled = scaler.transform(right)
-
-            left_probs = model.predict_proba(left_scaled)[0]
-            right_probs = model.predict_proba(right_scaled)[0]
-
-            x_class = np.argmax(left_probs) + 1 if np.max(left_probs) >= 0.93 else 0
-            y_class = np.argmax(right_probs) + 1 if np.max(right_probs) >= 0.93 else 0
-
-            with position_lock:
-                new_x = desired_position[0]
-                new_y = desired_position[1]
-
-                if x_class == 1:
-                    new_x += step_mm
-                elif x_class == 2:
-                    new_x -= step_mm
-
-                if y_class == 1:
-                    new_y += step_mm  # flipped because Y increases upward in center-origin
-                elif y_class == 2:
-                    new_y -= step_mm
-
-                # Clamp to physical bounds
-                new_x = max(-MAX_WIDTH_MM/2 + ball_radius_mm, min(MAX_WIDTH_MM/2 - ball_radius_mm, new_x))
-                new_y = max(-MAX_HEIGHT_MM/2 + ball_radius_mm, min(MAX_HEIGHT_MM/2 - ball_radius_mm, new_y))
-
-                # Collision-safe update
-                if not hits_wall_mm(new_x, desired_position[1]):
-                    desired_position[0] = new_x
-                if not hits_wall_mm(desired_position[0], new_y):
-                    desired_position[1] = new_y
+                with target_lock:
+                    if seq <= last_target_seq:
+                        continue
+                    last_target_seq = seq
+                    last_target_rx_time = time.monotonic()
+                apply_desired_target(x_mm, y_mm)
 
         except Exception as e:
-            print(f"Error receiving hand pose: {e}")
+            print(f"Error receiving control: {e}")
 
 def point_to_segment_dist(px, py, x1, y1, x2, y2):
     dx, dy = x2 - x1, y2 - y1
@@ -207,7 +196,7 @@ def hits_wall_mm(x_mm, y_mm):
     return False
 
 threading.Thread(target=handshake_listener, daemon=True).start()
-threading.Thread(target=listen_for_hand_pose, daemon=True).start()
+threading.Thread(target=listen_for_control, daemon=True).start()
 
 try:
     while True:
@@ -223,6 +212,13 @@ try:
             target_port = gui_port
         if target_ip not in ("0.0.0.0", "", None):
             ball_pos_sender.sendto(pos_bytes, (target_ip, target_port))
+
+        with target_lock:
+            stale_target = (time.monotonic() - last_target_rx_time) > TARGET_TIMEOUT_S
+        if stale_target:
+            with position_lock:
+                desired_position[0] = b_pos[0]
+                desired_position[1] = b_pos[1]
 
         last_error = current_error
 
