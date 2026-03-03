@@ -81,8 +81,14 @@ DEFAULT_GUI_POSITION_PORT = 6007
 position_lock = threading.Lock()
 endpoint_lock = threading.Lock()
 
-def handshake_listener():
+def set_gui_endpoint(ip: str, port: int, source: str):
     global gui_ip, gui_port
+    with endpoint_lock:
+        gui_ip = ip
+        gui_port = int(port)
+    print(f"GUI endpoint updated via {source}: {gui_ip}:{gui_port}")
+
+def handshake_listener():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", HANDSHAKE_PORT))
     print(f"Listening for handshake on 0.0.0.0:{HANDSHAKE_PORT}")
@@ -101,16 +107,13 @@ def handshake_listener():
         reply_port = int(msg.get("reply_port", 0))
         requested_position_port = int(msg.get("position_port", DEFAULT_GUI_POSITION_PORT))
         laptop_ip = addr[0]
-
-        with endpoint_lock:
-            gui_ip = laptop_ip
-            gui_port = requested_position_port
+        set_gui_endpoint(laptop_ip, requested_position_port, "handshake")
 
         ack = {
             "type": "ack",
             "pi_ip": socket.gethostbyname(socket.gethostname()),
             "control_port": hand_pose_port,
-            "position_port": gui_port,
+            "position_port": requested_position_port,
         }
 
         if reply_port > 0:
@@ -129,7 +132,18 @@ def listen_for_hand_pose():
 
     while True:
         try:
-            data, _ = sock.recvfrom(2048)
+            data, addr = sock.recvfrom(2048)
+
+            # Control path on same UDP port: update GUI position return endpoint.
+            try:
+                msg = json.loads(data.decode("utf-8"))
+            except Exception:
+                msg = None
+            if isinstance(msg, dict) and msg.get("type") == "position_subscribe":
+                requested_port = int(msg.get("position_port", DEFAULT_GUI_POSITION_PORT))
+                set_gui_endpoint(addr[0], requested_port, "position_subscribe")
+                continue
+
             floats = np.frombuffer(data, dtype=np.float32)
 
             if floats.shape[0] != 40:
@@ -207,7 +221,8 @@ try:
         with endpoint_lock:
             target_ip = gui_ip
             target_port = gui_port
-        ball_pos_sender.sendto(pos_bytes, (target_ip, target_port))
+        if target_ip not in ("0.0.0.0", "", None):
+            ball_pos_sender.sendto(pos_bytes, (target_ip, target_port))
 
         last_error = current_error
 
