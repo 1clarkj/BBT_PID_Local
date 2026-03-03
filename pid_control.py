@@ -6,11 +6,12 @@ import threading
 import joblib
 import warnings
 import sys
+import json
 warnings.filterwarnings("ignore", message="X does not have valid feature names.*")
 
 
 from ball_balance_table_controller_v2 import BallBalanceTableControllerv2
-
+ 
 controller = BallBalanceTableControllerv2()
 controller.start()
 
@@ -68,15 +69,61 @@ maze_walls_mm = [
 ]
 
 ball_pos_sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-gui_ip = "192.168.0.115"  # Replace with the IP of the machine running the GUI
-gui_port = 6007         # This must match the port the GUI listens on
+gui_ip = "0.0.0.0"  # Will be determined through the handshake
+gui_port = 6007         # This must match the port the GUI listens on to send position data back
+hand_pose_port = 5006
+hand_pose_bind_ip = "0.0.0.0"
+
+HANDSHAKE_PORT = 8008
+DEFAULT_GUI_POSITION_PORT = 6007
 
 # GUI update lock
 position_lock = threading.Lock()
+endpoint_lock = threading.Lock()
+
+def handshake_listener():
+    global gui_ip, gui_port
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", HANDSHAKE_PORT))
+    print(f"Listening for handshake on 0.0.0.0:{HANDSHAKE_PORT}")
+
+    while True:
+        try:
+            data, addr = sock.recvfrom(2048)
+            msg = json.loads(data.decode("utf-8"))
+        except Exception as e:
+            print(f"Handshake parse error: {e}")
+            continue
+
+        if not isinstance(msg, dict) or msg.get("type") != "discover":
+            continue
+
+        reply_port = int(msg.get("reply_port", 0))
+        requested_position_port = int(msg.get("position_port", DEFAULT_GUI_POSITION_PORT))
+        laptop_ip = addr[0]
+
+        with endpoint_lock:
+            gui_ip = laptop_ip
+            gui_port = requested_position_port
+
+        ack = {
+            "type": "ack",
+            "pi_ip": socket.gethostbyname(socket.gethostname()),
+            "control_port": hand_pose_port,
+            "position_port": gui_port,
+        }
+
+        if reply_port > 0:
+            try:
+                sock.sendto(json.dumps(ack).encode("utf-8"), (laptop_ip, reply_port))
+                print(f"Handshake ACK sent to {laptop_ip}:{reply_port}; stream target {gui_ip}:{gui_port}")
+            except Exception as e:
+                print(f"Handshake ACK send error: {e}")
 
 def listen_for_hand_pose():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("192.168.0.139", 5006))
+    sock.bind((hand_pose_bind_ip, hand_pose_port))
+    print(f"Listening for hand pose on {hand_pose_bind_ip}:{hand_pose_port}")
 
     step_mm = 7.0
 
@@ -145,6 +192,7 @@ def hits_wall_mm(x_mm, y_mm):
             return True
     return False
 
+threading.Thread(target=handshake_listener, daemon=True).start()
 threading.Thread(target=listen_for_hand_pose, daemon=True).start()
 
 try:
@@ -156,7 +204,10 @@ try:
 
         b_pos = controller.get_ball_position_in_mm()
         pos_bytes = np.array(b_pos, dtype=np.float32).tobytes()
-        ball_pos_sender.sendto(pos_bytes, (gui_ip, gui_port))
+        with endpoint_lock:
+            target_ip = gui_ip
+            target_port = gui_port
+        ball_pos_sender.sendto(pos_bytes, (target_ip, target_port))
 
         last_error = current_error
 
