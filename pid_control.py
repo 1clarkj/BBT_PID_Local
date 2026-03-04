@@ -9,6 +9,7 @@ import json
 warnings.filterwarnings("ignore")
 
 
+from visibility_planner import VisibilityPlanner
 from ball_balance_table_controller_v2 import BallBalanceTableControllerv2
  
 controller = BallBalanceTableControllerv2()
@@ -46,6 +47,14 @@ d_counter = 0
 
 MAX_WIDTH_MM = 355
 MAX_HEIGHT_MM = 285
+ball_radius_mm = 20
+wall_safety_margin_mm = 4.0
+
+GOAL_REPLAN_THRESHOLD_MM = 10.0
+WAYPOINT_REACHED_MM = 8.0
+STUCK_REPLAN_TIMEOUT_S = 0.6
+PROGRESS_EPS_MM = 0.5
+REPLAN_MIN_INTERVAL_S = 0.08
 
 maze_walls_mm = [
     (-177.5, 142.5, -177.5, -142.5),  # left
@@ -80,6 +89,21 @@ endpoint_lock = threading.Lock()
 target_lock = threading.Lock()
 last_target_seq = -1
 last_target_rx_time = time.monotonic()
+latest_target_goal = np.array(desired_position, dtype=float)
+
+planner_lock = threading.Lock()
+planner = VisibilityPlanner(
+    walls_mm=maze_walls_mm,
+    inflation_mm=(ball_radius_mm + wall_safety_margin_mm),
+    helper_edge_length_mm=40.0,
+)
+planner_path = []
+planner_waypoint_idx = 0
+planner_goal = np.array(desired_position, dtype=float)
+planner_replan_requested = True
+last_replan_time = 0.0
+last_progress_time = time.monotonic()
+last_waypoint_distance = None
 
 def set_gui_endpoint(ip: str, port: int, source: str):
     global gui_ip, gui_port
@@ -132,6 +156,72 @@ def apply_desired_target(x_mm: float, y_mm: float):
         if not hits_wall_mm(desired_position[0], new_y):
             desired_position[1] = new_y
 
+def set_target_goal_from_message(x_mm: float, y_mm: float):
+    global latest_target_goal, planner_replan_requested
+    candidate = np.array([x_mm, y_mm], dtype=float)
+    candidate[0] = max(-MAX_WIDTH_MM / 2 + ball_radius_mm, min(MAX_WIDTH_MM / 2 - ball_radius_mm, candidate[0]))
+    candidate[1] = max(-MAX_HEIGHT_MM / 2 + ball_radius_mm, min(MAX_HEIGHT_MM / 2 - ball_radius_mm, candidate[1]))
+    with planner_lock:
+        prev_goal = latest_target_goal.copy()
+        latest_target_goal = candidate
+        if np.linalg.norm(candidate - prev_goal) >= GOAL_REPLAN_THRESHOLD_MM:
+            planner_replan_requested = True
+
+def update_planner_setpoint(current_pos_xy):
+    global planner_path, planner_waypoint_idx, planner_goal, planner_replan_requested
+    global last_replan_time, last_progress_time, last_waypoint_distance
+
+    now = time.monotonic()
+    current_pos = np.array(current_pos_xy, dtype=float)
+
+    with planner_lock:
+        goal = latest_target_goal.copy()
+        path_snapshot = list(planner_path)
+        waypoint_idx_snapshot = planner_waypoint_idx
+        need_goal_replan = np.linalg.norm(goal - planner_goal) >= GOAL_REPLAN_THRESHOLD_MM
+        need_replan = planner_replan_requested or need_goal_replan or not path_snapshot
+
+    if need_replan and (now - last_replan_time) >= REPLAN_MIN_INTERVAL_S:
+        new_path = planner.plan(current_pos, goal)
+        with planner_lock:
+            planner_path = [tuple(p) for p in new_path]
+            planner_waypoint_idx = 1 if len(planner_path) > 1 else 0
+            planner_goal = goal
+            planner_replan_requested = False
+            last_replan_time = now
+            last_progress_time = now
+            last_waypoint_distance = None
+            path_snapshot = list(planner_path)
+            waypoint_idx_snapshot = planner_waypoint_idx
+
+    if not path_snapshot:
+        apply_desired_target(float(goal[0]), float(goal[1]))
+        return
+
+    if waypoint_idx_snapshot >= len(path_snapshot):
+        waypoint_idx_snapshot = len(path_snapshot) - 1
+
+    waypoint = np.array(path_snapshot[waypoint_idx_snapshot], dtype=float)
+    distance_to_waypoint = float(np.linalg.norm(current_pos - waypoint))
+
+    if distance_to_waypoint <= WAYPOINT_REACHED_MM and waypoint_idx_snapshot < len(path_snapshot) - 1:
+        with planner_lock:
+            planner_waypoint_idx += 1
+            waypoint_idx_snapshot = planner_waypoint_idx
+            waypoint = np.array(planner_path[waypoint_idx_snapshot], dtype=float)
+            distance_to_waypoint = float(np.linalg.norm(current_pos - waypoint))
+            last_progress_time = now
+            last_waypoint_distance = distance_to_waypoint
+
+    with planner_lock:
+        if last_waypoint_distance is None or distance_to_waypoint < (last_waypoint_distance - PROGRESS_EPS_MM):
+            last_waypoint_distance = distance_to_waypoint
+            last_progress_time = now
+        elif (now - last_progress_time) > STUCK_REPLAN_TIMEOUT_S:
+            planner_replan_requested = True
+
+    apply_desired_target(float(waypoint[0]), float(waypoint[1]))
+
 def listen_for_control():
     global last_target_seq, last_target_rx_time
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -172,7 +262,7 @@ def listen_for_control():
                         continue
                     last_target_seq = seq
                     last_target_rx_time = time.monotonic()
-                apply_desired_target(x_mm, y_mm)
+                set_target_goal_from_message(x_mm, y_mm)
 
         except Exception as e:
             print(f"Error receiving control: {e}")
@@ -186,8 +276,6 @@ def point_to_segment_dist(px, py, x1, y1, x2, y2):
     proj_x = x1 + t * dx
     proj_y = y1 + t * dy
     return ((px - proj_x)**2 + (py - proj_y)**2)**0.5
-
-ball_radius_mm = 20  
 
 def hits_wall_mm(x_mm, y_mm):
     for x1, y1, x2, y2 in maze_walls_mm:
@@ -216,9 +304,9 @@ try:
         with target_lock:
             stale_target = (time.monotonic() - last_target_rx_time) > TARGET_TIMEOUT_S
         if stale_target:
-            with position_lock:
-                desired_position[0] = b_pos[0]
-                desired_position[1] = b_pos[1]
+            set_target_goal_from_message(b_pos[0], b_pos[1])
+
+        update_planner_setpoint(b_pos)
 
         last_error = current_error
 
