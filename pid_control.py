@@ -73,6 +73,25 @@ maze_walls_mm = [
     (102.5, 92.5, 102.5, 47.5),
 ]
 
+CENTER_LINES_MM = [
+    (-132.5, -122.5, -132.5, 122.5),
+    (-132.5, 122.5, -22.5, 122.5),
+    (57.5, 122.5, 150.5, 122.5),
+    (-87.5, 82.5, -22.5, 82.5),
+    (-132.5, 42.5, 150.5, 42.5),
+    (-132.5, -42.5, 7.5, -42.5),
+    (107.5, -42.5, 150.5, -42.5),
+    (-132.5, -122.5, -22.5, -122.5),
+    (57.5, -122.5, 150.5, -122.5),
+    (-22.5, 42.5, -22.5, 122.5),
+    (-22.5, -122.5, -22.5, -42.5),
+    (150.5, 42.5, 150.5, 122.5),
+    (150.5, -122.5, 150.5, -42.5),
+    (-22.5, -42.5, 22.5, -28.5),
+    (22.5, -28.5, 97.5, -28.5),
+    (97.5, -28.5, 150.5, -42.5),
+]
+
 ball_pos_sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 gui_ip = "0.0.0.0"  # Will be determined through the handshake
 gui_port = 6007         # This must match the port the GUI listens on to send position data back
@@ -96,6 +115,7 @@ planner = VisibilityPlanner(
     walls_mm=maze_walls_mm,
     inflation_mm=(ball_radius_mm + wall_safety_margin_mm),
     helper_edge_length_mm=40.0,
+    center_lines_mm=CENTER_LINES_MM,
 )
 planner_path = []
 planner_waypoint_idx = 0
