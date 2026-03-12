@@ -106,6 +106,9 @@ HANDSHAKE_PORT = 8008
 DEFAULT_GUI_POSITION_PORT = 6007
 TARGET_TIMEOUT_S = 0.5
 TARGET_HOLD_TIMEOUT_S = 2.0
+BALL_TRACK_HOLD_S = 0.15
+INTEGRAL_CLAMP_MM_S = 600.0
+MAX_SERVO_DEG = 35.0
 
 # GUI update lock
 position_lock = threading.Lock()
@@ -114,6 +117,7 @@ target_lock = threading.Lock()
 last_target_seq = -1
 last_target_rx_time = time.monotonic()
 latest_target_goal = np.array(desired_position, dtype=float)
+has_received_target = False
 
 planner_lock = threading.Lock()
 VisibilityPlanner.STRICT_EDGE_CLEARANCE_MM = planner_strict_edge_clearance_mm
@@ -130,6 +134,8 @@ planner_replan_requested = True
 last_replan_time = 0.0
 last_progress_time = time.monotonic()
 last_waypoint_distance = None
+last_valid_ball_pos = None
+last_ball_seen_time = 0.0
 
 def set_gui_endpoint(ip: str, port: int, source: str):
     global gui_ip, gui_port
@@ -252,7 +258,7 @@ def update_planner_setpoint(current_pos_xy):
     apply_desired_target(float(waypoint[0]), float(waypoint[1]))
 
 def listen_for_control():
-    global last_target_seq, last_target_rx_time
+    global last_target_seq, last_target_rx_time, has_received_target
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((hand_pose_bind_ip, hand_pose_port))
     print(f"Listening for control on {hand_pose_bind_ip}:{hand_pose_port}")
@@ -294,6 +300,7 @@ def listen_for_control():
                         continue
                     last_target_seq = seq
                     last_target_rx_time = now
+                    has_received_target = True
                 set_target_goal_from_message(x_mm, y_mm)
 
         except Exception as e:
@@ -315,6 +322,25 @@ def hits_wall_mm(x_mm, y_mm):
             return True
     return False
 
+
+def reset_pid_state():
+    global p_error, current_error, last_error, delta_error, p, i, d, pid
+    global e_terms, d_terms, sum_error, e_counter, d_counter
+
+    p_error = (0.0, 0.0)
+    current_error = (0.0, 0.0)
+    last_error = (0.0, 0.0)
+    delta_error = (0.0, 0.0)
+    p = (0.0, 0.0)
+    i = (0.0, 0.0)
+    d = (0.0, 0.0)
+    pid = (0.0, 0.0)
+    e_terms = [(0.0, 0.0)] * e_filter
+    d_terms = [(0.0, 0.0)] * d_filter
+    sum_error = (0.0, 0.0)
+    e_counter = 0
+    d_counter = 0
+
 threading.Thread(target=handshake_listener, daemon=True).start()
 threading.Thread(target=listen_for_control, daemon=True).start()
 
@@ -324,8 +350,22 @@ try:
         time_delta = current_time - last_time
         dt = time_delta.total_seconds()
         last_time = current_time
+        dt = max(dt, 1e-4)
 
-        b_pos = controller.get_ball_position_in_mm()
+        raw_b_pos = controller.get_ball_position_in_mm()
+        now_mono = time.monotonic()
+        ball_contact = bool(getattr(controller, "ball_contact", False))
+        ball_visible = ball_contact or (last_valid_ball_pos is not None and (now_mono - last_ball_seen_time) <= BALL_TRACK_HOLD_S)
+
+        if ball_contact:
+            b_pos = raw_b_pos
+            last_valid_ball_pos = b_pos
+            last_ball_seen_time = now_mono
+        elif last_valid_ball_pos is not None:
+            b_pos = last_valid_ball_pos
+        else:
+            b_pos = raw_b_pos
+
         pos_bytes = np.array(b_pos, dtype=np.float32).tobytes()
         with endpoint_lock:
             target_ip = gui_ip
@@ -334,10 +374,20 @@ try:
             ball_pos_sender.sendto(pos_bytes, (target_ip, target_port))
 
         with target_lock:
-            stale_target = (time.monotonic() - last_target_rx_time) > TARGET_TIMEOUT_S
-            hold_timeout = (time.monotonic() - last_target_rx_time) > TARGET_HOLD_TIMEOUT_S
-        if stale_target and hold_timeout:
+            target_age = now_mono - last_target_rx_time
+            stale_target = target_age > TARGET_TIMEOUT_S
+            hold_timeout = target_age > TARGET_HOLD_TIMEOUT_S
+            stream_seen = has_received_target
+        if stream_seen and stale_target and hold_timeout and ball_visible:
+            # Only freeze target to current ball after a real target stream has existed.
             set_target_goal_from_message(b_pos[0], b_pos[1])
+
+        if not ball_visible:
+            reset_pid_state()
+            controller._servo_controller.set_degrees_bbt((0.0, 0.0))
+            print("Ball not detected; holding neutral platform.")
+            time.sleep(0.01)
+            continue
 
         update_planner_setpoint(b_pos)
 
@@ -360,6 +410,10 @@ try:
         # I
         sum_error = (sum_error[0] + current_error[0] * dt,
                      sum_error[1] + current_error[1] * dt)
+        sum_error = (
+            max(-INTEGRAL_CLAMP_MM_S, min(INTEGRAL_CLAMP_MM_S, sum_error[0])),
+            max(-INTEGRAL_CLAMP_MM_S, min(INTEGRAL_CLAMP_MM_S, sum_error[1])),
+        )
 
         # D
         delta_error = (current_error[0] - last_error[0], current_error[1] - last_error[1])
@@ -376,7 +430,10 @@ try:
         d = (delta_error[0] * K_D[0], delta_error[1] * K_D[1])
         pid = (p[0] + i[0] + d[0], p[1] + i[1] + d[1])
 
-        current_servo_positions = (-(pid[0] - 5), -(pid[1] - 5))
+        current_servo_positions = (
+            max(-MAX_SERVO_DEG, min(MAX_SERVO_DEG, -(pid[0] - 5))),
+            max(-MAX_SERVO_DEG, min(MAX_SERVO_DEG, -(pid[1] - 5))),
+        )
         controller._servo_controller.set_degrees_bbt(current_servo_positions)
 
         print(f"Ball Position: {b_pos}, Desired Position: {desired_position}")
