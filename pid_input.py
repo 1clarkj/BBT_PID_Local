@@ -7,10 +7,13 @@ from ball_balance_table_controller_v2 import BallBalanceTableControllerv2
 controller = BallBalanceTableControllerv2()
 controller.start()
 
+# original
+# K_P = (0.25, 0.25)
+# K_I = (0.0, 0.0)
+# K_D = (25, 25)
 K_P = (0.25, 0.25)
 K_I = (0.0, 0.0)
-K_D = (25, 25)
-
+K_D = (0.0, 0.0)
 e_filter = 15
 d_filter = 75
 
