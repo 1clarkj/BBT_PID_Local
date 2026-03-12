@@ -58,6 +58,7 @@ WAYPOINT_REACHED_MM = 8.0
 STUCK_REPLAN_TIMEOUT_S = 0.6
 PROGRESS_EPS_MM = 0.5
 REPLAN_MIN_INTERVAL_S = 0.08
+WAYPOINT_STUCK_REPLAN_MIN_DIST_MM = 16.0
 
 maze_walls_mm = [
     (-177.5, 142.5, -177.5, -142.5),  # left
@@ -104,6 +105,7 @@ hand_pose_bind_ip = "0.0.0.0"
 HANDSHAKE_PORT = 8008
 DEFAULT_GUI_POSITION_PORT = 6007
 TARGET_TIMEOUT_S = 0.5
+TARGET_HOLD_TIMEOUT_S = 2.0
 
 # GUI update lock
 position_lock = threading.Lock()
@@ -241,7 +243,10 @@ def update_planner_setpoint(current_pos_xy):
         if last_waypoint_distance is None or distance_to_waypoint < (last_waypoint_distance - PROGRESS_EPS_MM):
             last_waypoint_distance = distance_to_waypoint
             last_progress_time = now
-        elif (now - last_progress_time) > STUCK_REPLAN_TIMEOUT_S:
+        elif (
+            (now - last_progress_time) > STUCK_REPLAN_TIMEOUT_S
+            and distance_to_waypoint > WAYPOINT_STUCK_REPLAN_MIN_DIST_MM
+        ):
             planner_replan_requested = True
 
     apply_desired_target(float(waypoint[0]), float(waypoint[1]))
@@ -281,11 +286,14 @@ def listen_for_control():
                 except (TypeError, ValueError):
                     continue
 
+                now = time.monotonic()
                 with target_lock:
-                    if seq <= last_target_seq:
+                    # If sender restarts, sequence may reset to 0; allow reset
+                    # after target stream has been stale for a short interval.
+                    if seq <= last_target_seq and (now - last_target_rx_time) <= TARGET_TIMEOUT_S:
                         continue
                     last_target_seq = seq
-                    last_target_rx_time = time.monotonic()
+                    last_target_rx_time = now
                 set_target_goal_from_message(x_mm, y_mm)
 
         except Exception as e:
@@ -327,7 +335,8 @@ try:
 
         with target_lock:
             stale_target = (time.monotonic() - last_target_rx_time) > TARGET_TIMEOUT_S
-        if stale_target:
+            hold_timeout = (time.monotonic() - last_target_rx_time) > TARGET_HOLD_TIMEOUT_S
+        if stale_target and hold_timeout:
             set_target_goal_from_message(b_pos[0], b_pos[1])
 
         update_planner_setpoint(b_pos)
