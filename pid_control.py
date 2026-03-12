@@ -49,6 +49,9 @@ MAX_WIDTH_MM = 355
 MAX_HEIGHT_MM = 285
 ball_radius_mm = 20
 wall_safety_margin_mm = 4.0
+planner_ball_radius_mm = 16.0
+planner_wall_safety_margin_mm = 0.0
+planner_strict_edge_clearance_mm = 0.5
 
 GOAL_REPLAN_THRESHOLD_MM = 10.0
 WAYPOINT_REACHED_MM = 8.0
@@ -62,7 +65,7 @@ maze_walls_mm = [
     (177.5, -142.5, 177.5, 142.5),    # right
     (177.5, 142.5, -177.5, 142.5),    # top
     (17.5, -142.5, 17.5, -62.5),
-    (12.5, -57.5, 102.5, -57.5),
+    (12.5, -67.5, 102.5, -67.5),
     (177.5, 0.0, -62.5, 0.0),
     (-63.0, -85.0, -63.0, 85.0),
     (-58.0, 80.0, -93.0, 80.0),
@@ -111,10 +114,11 @@ last_target_rx_time = time.monotonic()
 latest_target_goal = np.array(desired_position, dtype=float)
 
 planner_lock = threading.Lock()
+VisibilityPlanner.STRICT_EDGE_CLEARANCE_MM = planner_strict_edge_clearance_mm
 planner = VisibilityPlanner(
     walls_mm=maze_walls_mm,
-    inflation_mm=(ball_radius_mm + wall_safety_margin_mm),
-    helper_edge_length_mm=40.0,
+    inflation_mm=(planner_ball_radius_mm + planner_wall_safety_margin_mm),
+    helper_edge_length_mm=32.0,
     center_lines_mm=CENTER_LINES_MM,
 )
 planner_path = []
