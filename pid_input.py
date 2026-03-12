@@ -8,7 +8,7 @@ controller = BallBalanceTableControllerv2()
 controller.start()
 
 K_P = (0.25, 0.25)
-K_I = (0.1, 0.1)
+K_I = (0.0, 0.0)
 K_D = (25, 25)
 
 e_filter = 15
