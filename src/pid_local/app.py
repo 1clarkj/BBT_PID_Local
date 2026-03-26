@@ -23,6 +23,8 @@ e_filter = 7
 d_filter = 30
 
 desired_position = [122.5, 100.5]  # use list, so it can be updated in thread
+RESET_HOME_TARGET_MM = np.array(desired_position, dtype=float)
+RESET_HOME_REACHED_MM = 15.0
 
 current_servo_positions = (0, 0)  # Servo position (degrees)
 b_pos = (0, 0)  # Ball position in mm
@@ -121,6 +123,7 @@ last_target_seq = -1
 last_target_rx_time = time.monotonic()
 latest_target_goal = np.array(desired_position, dtype=float)
 has_received_target = False
+reset_mode_latched = False
 
 planner_lock = threading.Lock()
 VisibilityPlanner.STRICT_EDGE_CLEARANCE_MM = planner_strict_edge_clearance_mm
@@ -292,7 +295,8 @@ def update_planner_setpoint(current_pos_xy):
     apply_desired_target(float(waypoint[0]), float(waypoint[1]))
 
 def listen_for_control():
-    global last_target_seq, last_target_rx_time, has_received_target
+    global last_target_seq, last_target_rx_time, has_received_target, reset_mode_latched
+    global planner_replan_requested
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((hand_pose_bind_ip, hand_pose_port))
     print(f"Listening for control on {hand_pose_bind_ip}:{hand_pose_port}")
@@ -318,6 +322,7 @@ def listen_for_control():
                 x_mm = msg.get("x_mm")
                 y_mm = msg.get("y_mm")
                 seq = int(msg.get("seq", -1))
+                reset_flag = bool(msg.get("reset_flag", False))
                 if x_mm is None or y_mm is None:
                     continue
                 try:
@@ -327,14 +332,40 @@ def listen_for_control():
                     continue
 
                 now = time.monotonic()
+                start_local_reset = False
+                ignore_packet_target = False
                 with target_lock:
                     # If sender restarts, sequence may reset to 0; allow reset
                     # after target stream has been stale for a short interval.
-                    if seq <= last_target_seq and (now - last_target_rx_time) <= TARGET_TIMEOUT_S:
+                    if (
+                        seq <= last_target_seq
+                        and (now - last_target_rx_time) <= TARGET_TIMEOUT_S
+                        and (not reset_mode_latched)
+                    ):
                         continue
-                    last_target_seq = seq
+
+                    if seq > last_target_seq:
+                        last_target_seq = seq
                     last_target_rx_time = now
                     has_received_target = True
+
+                    if reset_flag and (not reset_mode_latched):
+                        reset_mode_latched = True
+                        start_local_reset = True
+
+                    if reset_mode_latched:
+                        ignore_packet_target = True
+
+                if start_local_reset:
+                    with planner_lock:
+                        planner_replan_requested = True
+                    set_target_goal_from_message(float(RESET_HOME_TARGET_MM[0]), float(RESET_HOME_TARGET_MM[1]))
+                    print("Reset mode latched on Pi; ignoring packet targets until home is reached.")
+                    continue
+
+                if ignore_packet_target:
+                    continue
+
                 set_target_goal_from_message(x_mm, y_mm)
 
         except Exception as e:
@@ -412,7 +443,8 @@ try:
             stale_target = target_age > TARGET_TIMEOUT_S
             hold_timeout = target_age > TARGET_HOLD_TIMEOUT_S
             stream_seen = has_received_target
-        if stream_seen and stale_target and hold_timeout and ball_visible:
+            local_reset_mode = reset_mode_latched
+        if stream_seen and stale_target and hold_timeout and ball_visible and (not local_reset_mode):
             # Only freeze target to current ball after a real target stream has existed.
             set_target_goal_from_message(b_pos[0], b_pos[1])
 
@@ -426,6 +458,15 @@ try:
             print("Ball not detected; holding neutral platform.")
             time.sleep(0.01)
             continue
+
+        if local_reset_mode:
+            set_target_goal_from_message(float(RESET_HOME_TARGET_MM[0]), float(RESET_HOME_TARGET_MM[1]))
+            if np.linalg.norm(np.array(b_pos, dtype=float) - RESET_HOME_TARGET_MM) <= RESET_HOME_REACHED_MM:
+                with target_lock:
+                    reset_mode_latched = False
+                with planner_lock:
+                    planner_replan_requested = True
+                print("Reset mode finished locally on Pi (home reached).")
 
         if last_motion_pos is None:
             last_motion_pos = np.array(b_pos, dtype=float)
