@@ -20,11 +20,13 @@ class VisibilityPlanner:
         inflation_mm: float,
         helper_edge_length_mm: float = 40.0,
         center_lines_mm: Sequence[WallSeg] | None = None,
+        soft_cell_penalty: float = 12.0,
     ):
         self.walls_mm = list(walls_mm)
         self.inflation_mm = float(inflation_mm)
         self.helper_edge_length_mm = float(helper_edge_length_mm)
         self.center_lines_mm = list(center_lines_mm or [])
+        self.soft_cell_penalty = float(soft_cell_penalty)
 
         if not self.walls_mm:
             raise ValueError("walls_mm must not be empty")
@@ -38,12 +40,16 @@ class VisibilityPlanner:
 
         # Keep resolution linked to existing helper spacing knob.
         self.grid_resolution_mm = max(2.0, min(8.0, self.helper_edge_length_mm / 8.0))
+        self.hard_wall_clearance_mm = max(1.0, 0.55 * self.grid_resolution_mm)
         self.effective_inflation_mm = self.inflation_mm + float(self.STRICT_EDGE_CLEARANCE_MM)
 
         self.x_coords = np.arange(self.min_x, self.max_x + self.grid_resolution_mm, self.grid_resolution_mm)
         self.y_coords = np.arange(self.min_y, self.max_y + self.grid_resolution_mm, self.grid_resolution_mm)
         self.width = int(len(self.x_coords))
         self.height = int(len(self.y_coords))
+        self.hard_occupancy = np.zeros((self.height, self.width), dtype=bool)
+        self.soft_occupancy = np.zeros((self.height, self.width), dtype=bool)
+        # Legacy combined mask kept for compatibility/debug visualization.
         self.occupancy = np.zeros((self.height, self.width), dtype=bool)
 
         self._build_occupancy()
@@ -61,29 +67,37 @@ class VisibilityPlanner:
         proj_y = y1 + t * dy
         return math.hypot(px - proj_x, py - proj_y)
 
-    def _point_blocked(self, x_mm: float, y_mm: float) -> bool:
-        # Keep center-point workspace inset from outer bounds.
-        if x_mm < (self.min_x + self.effective_inflation_mm) or x_mm > (self.max_x - self.effective_inflation_mm):
-            return True
-        if y_mm < (self.min_y + self.effective_inflation_mm) or y_mm > (self.max_y - self.effective_inflation_mm):
-            return True
-
+    def _wall_distance_mm(self, x_mm: float, y_mm: float) -> float:
+        min_dist = float("inf")
         for x1, y1, x2, y2 in self.walls_mm:
-            if self._point_to_segment_dist(
+            dist = self._point_to_segment_dist(
                 x_mm,
                 y_mm,
                 float(x1),
                 float(y1),
                 float(x2),
                 float(y2),
-            ) <= self.effective_inflation_mm:
-                return True
-        return False
+            )
+            if dist < min_dist:
+                min_dist = dist
+        return min_dist
 
     def _build_occupancy(self):
         for iy, y_mm in enumerate(self.y_coords):
             for ix, x_mm in enumerate(self.x_coords):
-                self.occupancy[iy, ix] = self._point_blocked(float(x_mm), float(y_mm))
+                x = float(x_mm)
+                y = float(y_mm)
+                wall_dist = self._wall_distance_mm(x, y)
+                edge_dist = min(x - self.min_x, self.max_x - x, y - self.min_y, self.max_y - y)
+
+                hard = (wall_dist <= self.hard_wall_clearance_mm) or (edge_dist <= self.hard_wall_clearance_mm)
+                soft = (
+                    (wall_dist <= self.effective_inflation_mm) or (edge_dist <= self.effective_inflation_mm)
+                ) and (not hard)
+
+                self.hard_occupancy[iy, ix] = hard
+                self.soft_occupancy[iy, ix] = soft
+                self.occupancy[iy, ix] = hard or soft
 
     def _in_bounds(self, ix: int, iy: int) -> bool:
         return 0 <= ix < self.width and 0 <= iy < self.height
@@ -99,29 +113,35 @@ class VisibilityPlanner:
     def cell_to_world(self, ix: int, iy: int) -> Point2:
         return float(self.x_coords[ix]), float(self.y_coords[iy])
 
-    def nearest_free_cell(self, ix: int, iy: int, max_radius: int = 48):
-        if self._in_bounds(ix, iy) and not self.occupancy[iy, ix]:
+    def nearest_free_cell(self, ix: int, iy: int, max_radius: int = 48, avoid_soft: bool = False):
+        if self._in_bounds(ix, iy) and (not self.hard_occupancy[iy, ix]) and ((not avoid_soft) or (not self.soft_occupancy[iy, ix])):
             return ix, iy
 
         for radius in range(1, max_radius + 1):
             for dx in range(-radius, radius + 1):
                 for dy in (-radius, radius):
                     nx, ny = ix + dx, iy + dy
-                    if self._in_bounds(nx, ny) and not self.occupancy[ny, nx]:
+                    if self._in_bounds(nx, ny) and (not self.hard_occupancy[ny, nx]) and ((not avoid_soft) or (not self.soft_occupancy[ny, nx])):
                         return nx, ny
             for dy in range(-radius + 1, radius):
                 for dx in (-radius, radius):
                     nx, ny = ix + dx, iy + dy
-                    if self._in_bounds(nx, ny) and not self.occupancy[ny, nx]:
+                    if self._in_bounds(nx, ny) and (not self.hard_occupancy[ny, nx]) and ((not avoid_soft) or (not self.soft_occupancy[ny, nx])):
                         return nx, ny
         return None
 
-    def nearest_free_world(self, point_xy: Iterable[float], max_radius: int = 48):
+    def nearest_free_world(self, point_xy: Iterable[float], max_radius: int = 48, avoid_soft: bool = False):
         ix, iy = self.world_to_cell(point_xy)
-        free_cell = self.nearest_free_cell(ix, iy, max_radius=max_radius)
+        free_cell = self.nearest_free_cell(ix, iy, max_radius=max_radius, avoid_soft=avoid_soft)
         if free_cell is None:
             return None
         return self.cell_to_world(free_cell[0], free_cell[1])
+
+    def is_blocked_world(self, point_xy: Iterable[float], include_soft: bool = False) -> bool:
+        ix, iy = self.world_to_cell(point_xy)
+        if include_soft:
+            return bool(self.hard_occupancy[iy, ix] or self.soft_occupancy[iy, ix])
+        return bool(self.hard_occupancy[iy, ix])
 
     def plan(self, start_xy: Iterable[float], goal_xy: Iterable[float]) -> List[Point2]:
         start_xy = tuple(float(v) for v in start_xy)
@@ -169,16 +189,17 @@ class VisibilityPlanner:
             cx, cy = current
             for dx, dy, step_cost in neighbors:
                 nx, ny = cx + dx, cy + dy
-                if not self._in_bounds(nx, ny) or self.occupancy[ny, nx]:
+                if not self._in_bounds(nx, ny) or self.hard_occupancy[ny, nx]:
                     continue
 
                 # Prevent diagonal corner cutting through occupied cells.
                 if dx != 0 and dy != 0:
-                    if self.occupancy[cy, nx] or self.occupancy[ny, cx]:
+                    if self.hard_occupancy[cy, nx] or self.hard_occupancy[ny, cx]:
                         continue
 
                 nxt = (nx, ny)
-                tentative = g_score[current] + step_cost
+                soft_penalty = self.soft_cell_penalty if self.soft_occupancy[ny, nx] else 0.0
+                tentative = g_score[current] + step_cost + soft_penalty
                 if tentative < g_score.get(nxt, float("inf")):
                     g_score[nxt] = tentative
                     came_from[nxt] = current

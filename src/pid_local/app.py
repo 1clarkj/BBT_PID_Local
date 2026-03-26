@@ -382,10 +382,9 @@ def point_to_segment_dist(px, py, x1, y1, x2, y2):
     return ((px - proj_x)**2 + (py - proj_y)**2)**0.5
 
 def hits_wall_mm(x_mm, y_mm):
-    for x1, y1, x2, y2 in maze_walls_mm:
-        if point_to_segment_dist(x_mm, y_mm, x1, y1, x2, y2) <= ball_radius_mm:
-            return True
-    return False
+    # Hard constraint: only cells containing wall geometry (or immediate rasterized wall band)
+    # are non-traversable. Soft near-wall cells are handled by planner cost penalties.
+    return planner.is_blocked_world((float(x_mm), float(y_mm)), include_soft=False)
 
 
 def reset_pid_state():
