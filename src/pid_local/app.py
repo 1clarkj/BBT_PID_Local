@@ -9,8 +9,8 @@ import json
 warnings.filterwarnings("ignore")
 
 
-from visibility_planner import VisibilityPlanner
-from ball_balance_table_controller_v2 import BallBalanceTableControllerv2
+from pid_local.planning.occupancy_planner import VisibilityPlanner
+from pid_local.hardware.table_controller import BallBalanceTableControllerv2
  
 controller = BallBalanceTableControllerv2()
 controller.start()

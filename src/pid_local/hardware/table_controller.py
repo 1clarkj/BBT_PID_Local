@@ -5,8 +5,8 @@ import time
 from evdev import ecodes
 import datetime
 import numpy as np
-from controller_not_started_error import ControllerNotStartedError
-from servo_controller import HS5645MGServoController
+from .controller_not_started_error import ControllerNotStartedError
+from .servo_controller import HS5645MGServoController
 
 
 class BallBalanceTableControllerv2(object):

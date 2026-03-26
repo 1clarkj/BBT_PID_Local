@@ -1,8 +1,15 @@
 import time
 import datetime
 import threading
+import sys
+from pathlib import Path
 
-from ball_balance_table_controller_v2 import BallBalanceTableControllerv2
+ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from pid_local.hardware.table_controller import BallBalanceTableControllerv2
 
 controller = BallBalanceTableControllerv2()
 controller.start()
